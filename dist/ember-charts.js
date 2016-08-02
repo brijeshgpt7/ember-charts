@@ -2561,9 +2561,6 @@ define('ember-charts/components/time-series-chart', ['exports', 'module', 'ember
     // Force X-Axis labels to print vertically
     xAxisVertLabels: false,
 
-    // Enable smart turning if feasible - TRUMPED by xAxisVertLabels
-    xAxisSmartLabels: false,
-
     // ----------------------------------------------------------------------------
     // Time Series Chart Constants
     // ----------------------------------------------------------------------------
@@ -2736,19 +2733,13 @@ define('ember-charts/components/time-series-chart', ['exports', 'module', 'ember
       this.set('legendTopPadding', 30);
     },
 
-    _shouldLabelsRotate: function _shouldLabelsRotate() {
-      var labels, maxLabelWidth;
-
-      if (this.get('xAxisSmartLabels')) {
-        labels = this.get('xAxis').selectAll('text');
-        maxLabelWidth = this.get('maxLabelWidth') || this.get('_innerTickSpacingX');
-        labels.each(function () {
-          if (this.getBBox().width > maxLabelWidth) {
-            return true;
-          }
-        });
-      }
-      return false;
+    // Now that we can get our labels all turny, I actually need to straighten them
+    // out if the feature is toggled
+    _straightenXAxisLabels: function _straightenXAxisLabels() {
+      var gXAxis = this.get('xAxis');
+      // most of these values are static and come from varrious places, including
+      // the bowels of D3
+      gXAxis.selectAll('text').attr("y", 9).attr("x", 0).attr("dy", "0.71em").attr("transform", null).style("text-anchor", "middle");
     },
 
     _barGroups: _Ember['default'].computed('barData.@each', 'ungroupedSeriesName', function () {
@@ -2782,8 +2773,9 @@ define('ember-charts/components/time-series-chart', ['exports', 'module', 'ember
       return this.get('width') - this.get('graphicLeft');
     }),
 
-    graphicHeight: _Ember['default'].computed('height', 'legendHeight', 'legendChartPadding', function () {
-      return this.get('height') - this.get('legendHeight') - this.get('legendChartPadding') - (this.get('MarginBottom') || 0);
+    graphicHeight: _Ember['default'].computed('height', 'legendHeight', 'legendChartPadding', 'marginBottom', function () {
+      var legendSize = this.get('legendHeight') + this.get('legendChartPadding') + (this.get('marginBottom') || 0);
+      return this.get('height') - legendSize;
     }),
 
     // ----------------------------------------------------------------------------
@@ -2905,7 +2897,7 @@ define('ember-charts/components/time-series-chart', ['exports', 'module', 'ember
     // For a dynamic x axis, let the max number of labels be the minimum of
     // the number of x ticks and the assigned value. This is to prevent
     // the assigned value from being so large that labels flood the x axis.
-    maxNumberOfLabels: _Ember['default'].computed('numXTicks', 'dynamicXAxis', 'maxNumberOfRotatedLabels', function (key, value) {
+    maxNumberOfLabels: _Ember['default'].computed('numXTicks', 'dynamicXAxis', 'maxNumberOfRotatedLabels', 'xAxisVertLabels', function (key, value) {
       var allowableTicks = this.get('xAxisVertLabels') ? this.get('maxNumberOfRotatedLabels') : this.get('numXTicks');
 
       if (this.get('dynamicXAxis')) {
@@ -3364,9 +3356,7 @@ define('ember-charts/components/time-series-chart', ['exports', 'module', 'ember
       this.filterMinorTicks();
 
       // Do we need to turn our axis labels?
-      if (this.get('xAxisVertLabels') || this._shouldLabelsRotate()) {
-        this._rotateXAxisLabels();
-      }
+      this.get('xAxisVertLabels') ? this._rotateXAxisLabels() : this._straightenXAxisLabels();
 
       //tickSize draws the Y-axis allignment line across the whole of the graph.
       var yAxis = d3.svg.axis().scale(this.get('yScale')).orient('right').ticks(this.get('numYTicks')).tickSize(this.get('graphicWidth')).tickFormat(this.get('formatValueAxis'));
@@ -5846,12 +5836,16 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
 
     // D3 No longer handles "minor ticks" for the user, but has instead reverted
     // to a strategy of allowing the user to handle rendered ticks as they see
-    // fit.  The new functionality has 2 parts:
-    // 1) Register all of the ticks "filtered" out by filterLabels
-    // 2) Apply a treatment to the labels
+    // fit.
     // maxNumberOfMinorTicks sets a treshold that is useful when determining our
-    // interval.  minorTickInterval is the modulo for the items to be removed.  So
-    // a maxNumberOfMinorTicks=0 and minorTickInterval=1 essentailly disables the
+    // interval. This represents the number of ticks that could be drawn between
+    // major ticks. For instance, we may 'allow' 2 minor ticks, but only need
+    // to render a single minor tick between labels.
+    //
+    // minorTickInterval is the modulo for the items to be removed.  This number
+    // will be between 1 and the maxNumberOfMinorTicks
+    //
+    // A maxNumberOfMinorTicks=0 and minorTickInterval=1 essentailly disables the
     // minor tick feature.
     maxNumberOfMinorTicks: 0,
     minorTickInterval: 1,
@@ -5914,8 +5908,7 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
 
     //  This is the set of ticks on which labels appear.
     labelledTicks: _Ember['default'].computed('unfilteredLabelledTicks', 'tickFilter', function () {
-      var ticks = this.get('unfilteredLabelledTicks');
-      return ticks.filter(this.get('tickFilter'));
+      return this.get('unfilteredLabelledTicks').filter(this.get('tickFilter'));
     }),
 
     // We need a method to figure out the interval specifity
@@ -5933,7 +5926,11 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
       ind1 = this.get('DOMAIN_ORDERING').indexOf(this.get('minTimeSpecificity'));
       ind2 = this.get('DOMAIN_ORDERING').indexOf(this.get('maxTimeSpecificity')) + 1;
       // Refers to the metrics used for the labelling
-      domainTypes = ind2 < 0 ? this.get('DOMAIN_ORDERING').slice(ind1) : this.get('DOMAIN_ORDERING').slice(ind1, ind2);
+      if (ind2 < 0) {
+        domainTypes = this.get('DOMAIN_ORDERING').slice(ind1);
+      } else {
+        domainTypes = this.get('DOMAIN_ORDERING').slice(ind1, ind2);
+      }
 
       for (i = 0, len = domainTypes.length; i < len; i++) {
         timeBetween = this.get('times')[domainTypes[i]];
@@ -6053,7 +6050,7 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
     },
 
     // We have an option of suppling custom filters based on the date type.  This
-    // way we can append any special behavior or pruning algorythim to Months that
+    // way we can append any special behavior or pruning algorithm to Months that
     // wouldn't be applicable to Weeks
     customFilterLibrary: {},
 
@@ -6099,8 +6096,6 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
 
     // See https://github.com/mbostock/d3/wiki/Time-Formatting
     formattedTime: _Ember['default'].computed('xAxisTimeInterval', function () {
-      // var l10n = d3.locale(ja_JP);
-
       switch (this.get('xAxisTimeInterval')) {
         case 'years':
         case 'Y':
@@ -6129,33 +6124,64 @@ define('ember-charts/mixins/time-series-labeler', ['exports', 'module', 'ember']
     })
   });
 });
-define('ember-charts/templates/components/chart-component', ['exports', 'module'], function (exports, module) {
-  'use strict';
+define("ember-charts/templates/components/chart-component", ["exports", "module"], function (exports, module) {
+  "use strict";
 
-  module.exports = Ember.HTMLBars.template(function anonymous(Handlebars, depth0, helpers, partials, data) {
-    this.compilerInfo = [4, '>= 1.0.0'];
-    helpers = this.merge(helpers, Ember.Handlebars.helpers);data = data || {};
-    var buffer = '',
-        stack1;
-
-    data.buffer.push("<svg width=");
-    stack1 = helpers._triageMustache.call(depth0, "outerWidth", { hash: {}, hashTypes: {}, hashContexts: {}, contexts: [depth0], types: ["ID"], data: data });
-    if (stack1 || stack1 === 0) {
-      data.buffer.push(stack1);
-    }
-    data.buffer.push(" height=");
-    stack1 = helpers._triageMustache.call(depth0, "outerHeight", { hash: {}, hashTypes: {}, hashContexts: {}, contexts: [depth0], types: ["ID"], data: data });
-    if (stack1 || stack1 === 0) {
-      data.buffer.push(stack1);
-    }
-    data.buffer.push(">\n  <g class=\"chart-viewport\" transform=");
-    stack1 = helpers._triageMustache.call(depth0, "transformViewport", { hash: {}, hashTypes: {}, hashContexts: {}, contexts: [depth0], types: ["ID"], data: data });
-    if (stack1 || stack1 === 0) {
-      data.buffer.push(stack1);
-    }
-    data.buffer.push("></g>\n</svg>");
-    return buffer;
-  });
+  module.exports = Ember.HTMLBars.template((function () {
+    return {
+      isHTMLBars: true,
+      revision: "Ember@1.12.1",
+      blockParams: 0,
+      cachedFragment: null,
+      hasRendered: false,
+      build: function build(dom) {
+        var el0 = dom.createDocumentFragment();
+        dom.setNamespace("http://www.w3.org/2000/svg");
+        var el1 = dom.createElement("svg");
+        var el2 = dom.createTextNode("\n  ");
+        dom.appendChild(el1, el2);
+        var el2 = dom.createElement("g");
+        dom.setAttribute(el2, "class", "chart-viewport");
+        dom.appendChild(el1, el2);
+        var el2 = dom.createTextNode("\n");
+        dom.appendChild(el1, el2);
+        dom.appendChild(el0, el1);
+        return el0;
+      },
+      render: function render(context, env, contextualElement) {
+        var dom = env.dom;
+        var hooks = env.hooks,
+            get = hooks.get,
+            attribute = hooks.attribute;
+        dom.detectNamespace(contextualElement);
+        var fragment;
+        if (env.useFragmentCache && dom.canClone) {
+          if (this.cachedFragment === null) {
+            fragment = this.build(dom);
+            if (this.hasRendered) {
+              this.cachedFragment = fragment;
+            } else {
+              this.hasRendered = true;
+            }
+          }
+          if (this.cachedFragment) {
+            fragment = dom.cloneNode(this.cachedFragment, true);
+          }
+        } else {
+          fragment = this.build(dom);
+        }
+        var element0 = dom.childAt(fragment, [0]);
+        var element1 = dom.childAt(element0, [1]);
+        var attrMorph0 = dom.createAttrMorph(element0, 'width');
+        var attrMorph1 = dom.createAttrMorph(element0, 'height');
+        var attrMorph2 = dom.createAttrMorph(element1, 'transform');
+        attribute(env, attrMorph0, element0, "width", get(env, context, "outerWidth"));
+        attribute(env, attrMorph1, element0, "height", get(env, context, "outerHeight"));
+        attribute(env, attrMorph2, element1, "transform", get(env, context, "transformViewport"));
+        return fragment;
+      }
+    };
+  })());
 });
 define("ember-charts/utils/group-by", ["exports"], function (exports) {
 	"use strict";
